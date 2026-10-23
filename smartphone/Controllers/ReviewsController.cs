@@ -1,10 +1,10 @@
-﻿using Microsoft.AspNetCore.Mvc;
+﻿using System.Text.Json;
+using System.Text.Json.Serialization;
+using Microsoft.AspNetCore.Mvc;
 using Mscc.GenerativeAI;
 using Mscc.GenerativeAI.Types;
 using smartphone.Data;
 using smartphone.Models;
-using System.Text.Json;
-using System.Text.Json.Serialization;
 
 namespace smartphone.Controllers;
 
@@ -52,7 +52,9 @@ public class ReviewsController : ControllerBase
             );
 
             var prompt = $"Product: {product.ProductName}\nCustomer: {request.CustomerName}\nRating: {request.Rating}/5\nReview: \"{request.Content}\"";
-            var response = await model.GenerateContent(prompt);
+
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+            var response = await model.GenerateContent(prompt, cancellationToken: cts.Token);
 
             var rawJson = response.Text?.Trim()
                 .Replace("```json", "", StringComparison.OrdinalIgnoreCase)

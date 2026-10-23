@@ -1,6 +1,6 @@
-﻿using Microsoft.AspNetCore.Mvc;
-using Mscc.GenerativeAI;
-using Mscc.GenerativeAI.Types;
+﻿using System.Text;
+using System.Text.Json;
+using Microsoft.AspNetCore.Mvc;
 using smartphone.Data;
 
 namespace smartphone.Controllers;
@@ -10,12 +10,14 @@ namespace smartphone.Controllers;
 public class ProductsController : ControllerBase
 {
     private readonly AppDbContext _context;
-    private readonly GoogleAI _googleAi;
+    private readonly IConfiguration _config;
+    private readonly HttpClient _http;
 
-    public ProductsController(AppDbContext context, GoogleAI googleAi)
+    public ProductsController(AppDbContext context, IConfiguration config)
     {
         _context = context;
-        _googleAi = googleAi;
+        _config = config;
+        _http = new HttpClient { Timeout = TimeSpan.FromSeconds(25) };
     }
 
     [HttpPost("{id}/generatedescription")]
@@ -25,17 +27,48 @@ public class ProductsController : ControllerBase
         if (product == null)
             return NotFound(new { message = "Product not found" });
 
+        var apiKey = _config["Gemini:ApiKey"];
+        if (string.IsNullOrEmpty(apiKey))
+            return StatusCode(500, new { message = "Gemini API key is not configured." });
+
         try
         {
-            var model = _googleAi.GenerativeModel(
-                model: "gemini-3.8-flash",
-                systemInstruction: new Content("You are a professional copywriter. Write an attractive product description of at most 80 words based on the product name, category, and features.")
-            );
+            var url = $"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent?key={apiKey}";
 
-            var prompt = $"Product Name: {product.ProductName}, Category: {product.Category}, Features: {product.Features}";
-            var response = await model.GenerateContent(prompt);
+            var payload = new
+            {
+                system_instruction = new
+                {
+                    parts = new[] { new { text = "You are a professional copywriter. Write an attractive product description of at most 80 words based on the product name, category, and features." } }
+                },
+                contents = new[]
+                {
+                    new
+                    {
+                        role = "user",
+                        parts = new[] { new { text = $"Product Name: {product.ProductName}, Category: {product.Category}, Features: {product.Features}" } }
+                    }
+                }
+            };
 
-            product.Description = response.Text?.Trim();
+            var jsonContent = new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json");
+            var response = await _http.PostAsync(url, jsonContent);
+            var responseBody = await response.Content.ReadAsStringAsync();
+
+            if (!response.IsSuccessStatusCode)
+            {
+                return StatusCode((int)response.StatusCode, new { message = "Gemini API error", detail = responseBody });
+            }
+
+            using var doc = JsonDocument.Parse(responseBody);
+            var generatedText = doc.RootElement
+                .GetProperty("candidates")[0]
+                .GetProperty("content")
+                .GetProperty("parts")[0]
+                .GetProperty("text")
+                .GetString()?.Trim();
+
+            product.Description = generatedText;
             await _context.SaveChangesAsync();
 
             return Ok(product);
